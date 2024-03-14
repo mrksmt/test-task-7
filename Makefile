@@ -4,10 +4,14 @@
 
 # test ...
 
+include envs/server.env
+include envs/client.env
+export
+
 run-client:
 	go run cmd/client/main.go
 
-run-servre:
+run-server:
 	go run cmd/server/main.go
 
 # test run client and server

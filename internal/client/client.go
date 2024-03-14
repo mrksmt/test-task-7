@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"time"
 
 	"github.com/pkg/errors"
 	"go.uber.org/ratelimit"
@@ -14,7 +16,9 @@ import (
 )
 
 type Parameters struct {
-	Address string `envconfig:"SENTENCE_SERVICE_ADDRESS" default:"localhost:8090"`
+	Address      string        `envconfig:"SENTENCE_SERVICE_ADDRESS" default:"localhost:8090"`
+	ReadTimeout  time.Duration `envconfig:"CLIENT_READ_TIMEOUT" default:"1s"`
+	WriteTimeout time.Duration `envconfig:"CLIENT_WRITE_TIMEOUT" default:"1s"`
 }
 
 type SentenceClient struct {
@@ -47,7 +51,7 @@ func (c *SentenceClient) Run(
 
 		fmt.Println()
 
-		sentence, err := c.GetSentence(context.WithoutCancel(ctx))
+		sentence, err := c.GetSentence(ctx)
 		if err != nil {
 			log.Println("client get sentence error:", err)
 			continue
@@ -71,13 +75,34 @@ func (c *SentenceClient) GetSentence(
 	}
 	defer conn.Close()
 
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		rl := ratelimit.New(10)
+		for {
+
+			for {
+				rl.Take()
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					err := helpers.ConnCheck(conn)
+					if err != nil {
+						cancel()
+						return
+					}
+				}
+			}
+		}
+	}()
+
 	log.Println("client established connection", conn.LocalAddr().String())
 
 	// get challenge code
 
 	challengeCode, err := helpers.Receive(conn)
 	if err != nil {
-		return "", errors.Wrap(err, "deal tcp")
+		return "", errors.Wrap(err, "get challenge code")
 	}
 	log.Println("client got  challenge code", challengeCode)
 
@@ -85,21 +110,26 @@ func (c *SentenceClient) GetSentence(
 
 	proof, err := pow.GetProofAsync(ctx, challengeCode)
 	if err != nil {
-		return "", errors.Wrap(err, "deal tcp")
+		return "", errors.Wrap(err, "get proof async")
 	}
 
 	// send proof of work
 
+	err = helpers.ConnCheck(conn)
+	if err != nil {
+		return "", errors.Wrap(err, "client send challenge resp")
+	}
+
 	_, err = conn.Write(proof)
 	if err != nil {
-		return "", errors.Wrap(err, "deal tcp")
+		return "", errors.Wrap(err, "client send challenge resp")
 	}
 	log.Println("client send challenge resp", proof)
 
 	// get server response
 
 	resp, err := helpers.Receive(conn)
-	if err != nil {
+	if err != nil && !errors.Is(err, io.EOF) {
 		return "", errors.Wrap(err, "receive sentence")
 	}
 

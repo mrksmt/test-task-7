@@ -3,65 +3,81 @@ package main
 import (
 	"context"
 	"log"
+	"os"
+	"os/signal"
 	"sync"
-	"time"
+	"syscall"
 
-	"github.com/goava/di"
-	"github.com/goava/slice"
+	"github.com/kelseyhightower/envconfig"
 
 	"github.com/mrksmt/test-task-7/internal/client"
-	"github.com/mrksmt/test-task-7/internal/service"
+	"github.com/mrksmt/test-task-7/internal/server/controller"
+	"github.com/mrksmt/test-task-7/internal/server/service"
+	"github.com/mrksmt/test-task-7/internal/server/storage"
 )
 
-var address = "localhost:8090"
+func main() {
 
-func xxx() {
+	// common part ----------
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	wg := new(sync.WaitGroup)
 
-	// run server
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(
+		sigChan,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT,
+	)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
 
-	srv := service.NewSentenceService(&service.Parameters{Address: address})
+	// run server ----------
+
+	cfg := controller.Parameters{}
+	err := envconfig.Process("", &cfg)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	stor := storage.NewFakeStorage()
+	srv := service.NewService(stor)
+	c := controller.NewController(&cfg, srv)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err := srv.Run(ctx)
+		err := c.Run(ctx)
 		if err != nil {
-			log.Println("server run error:", err)
-			return
+			log.Println(err)
 		}
 	}()
 
-	<-time.After(time.Second)
+	// run client ----------
 
-	// run client
+	ClientCfg := client.Parameters{}
 
-	cl := client.NewSentenceClient(&client.Parameters{Address: address})
-	sentence, err := cl.GetSentence(ctx)
+	err = envconfig.Process("", &ClientCfg)
 	if err != nil {
-		log.Println("client run error:", err)
-		return
+		log.Fatal(err.Error())
 	}
 
-	log.Println("client got sentence:", sentence)
+	cl := client.NewSentenceClient(&ClientCfg)
 
-	// wait for server stop
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := cl.Run(ctx)
+		if err != nil {
+			log.Println(err)
+		}
+	}()
 
-	cancel()
 	wg.Wait()
-}
-
-func main() {
-	slice.Run(
-		slice.WithName("sentence-all-in-one"),
-		slice.WithParameters(
-			&client.Parameters{},
-			&service.Parameters{},
-		),
-		slice.WithComponents(
-			slice.Provide(client.NewSentenceClient, di.As(new(slice.Dispatcher))),
-			slice.Provide(service.NewSentenceService, di.As(new(slice.Dispatcher))),
-		),
-	)
 }

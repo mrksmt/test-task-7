@@ -1,20 +1,55 @@
 package main
 
 import (
-	"github.com/goava/di"
-	"github.com/goava/slice"
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+
+	"github.com/kelseyhightower/envconfig"
 
 	"github.com/mrksmt/test-task-7/internal/client"
 )
 
 func main() {
-	slice.Run(
-		slice.WithName("sentence-client"),
-		slice.WithParameters(
-			&client.Parameters{},
-		),
-		slice.WithComponents(
-			slice.Provide(client.NewSentenceClient, di.As(new(slice.Dispatcher))),
-		),
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	wg := new(sync.WaitGroup)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(
+		sigChan,
+		syscall.SIGHUP,
+		syscall.SIGINT,
+		syscall.SIGTERM,
+		syscall.SIGQUIT,
 	)
+	go func() {
+		<-sigChan
+		cancel()
+	}()
+
+	cfg := client.Parameters{}
+
+	err := envconfig.Process("", &cfg)
+	if err != nil {
+		log.Fatal(err.Error())
+	}
+
+	c := client.NewSentenceClient(&cfg)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err := c.Run(ctx)
+		if err != nil {
+			log.Println(err)
+		}
+	}()
+
+	wg.Wait()
 }

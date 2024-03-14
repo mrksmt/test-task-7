@@ -1,36 +1,45 @@
-package service
+package controller
 
 import (
 	"context"
 	"log"
 	"net"
 	"sync"
+	"time"
 
-	"github.com/go-faker/faker/v4"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 
+	"github.com/mrksmt/test-task-7/internal/server/service"
 	"github.com/mrksmt/test-task-7/pkg/helpers"
 	"github.com/mrksmt/test-task-7/pkg/pow"
 )
 
 type Parameters struct {
-	Address string `envconfig:"SENTENCE_SERVICE_ADDRESS" default:"localhost:8090"`
+	Address          string        `envconfig:"SENTENCE_SERVICE_ADDRESS" default:"localhost:8090"`
+	WriteTimeout     time.Duration `envconfig:"SERVICE_WRITE_TIMEOUT" default:"1s"`
+	ChallengeTimeout time.Duration `envconfig:"SERVICE_CHALLENGE_TIMEOUT" default:"10s"`
 }
 
-type SentenceService struct {
-	address string
+type Controller struct {
+	params  *Parameters
+	service service.Service
 }
 
-func NewSentenceService(
+func NewController(
 	params *Parameters,
-) *SentenceService {
-	s := &SentenceService{address: params.Address}
+	service service.Service,
+) *Controller {
+
+	s := &Controller{
+		params:  params,
+		service: service,
+	}
 	return s
 }
 
 // Run implements slice.Dispatcher
-func (s *SentenceService) Run(
+func (s *Controller) Run(
 	ctx context.Context,
 ) error {
 
@@ -38,7 +47,7 @@ func (s *SentenceService) Run(
 	handlerWG := new(sync.WaitGroup)
 
 	// listen for incoming connections
-	listener, err := net.Listen("tcp", s.address)
+	listener, err := net.Listen("tcp", s.params.Address)
 	if err != nil {
 		return errors.Wrap(err, "make tcp listener error")
 	}
@@ -86,8 +95,8 @@ func (s *SentenceService) Run(
 	return nil
 }
 
-func (s *SentenceService) handleClient(
-	_ context.Context,
+func (c *Controller) handleClient(
+	ctx context.Context,
 	wg *sync.WaitGroup,
 	conn net.Conn,
 ) {
@@ -98,8 +107,9 @@ func (s *SentenceService) handleClient(
 
 	// send challenge code
 
-	challengeCode := s.getChallengeCode()
+	challengeCode := c.getChallengeCode()
 
+	conn.SetWriteDeadline(time.Now().Add(c.params.WriteTimeout))
 	_, err := conn.Write(challengeCode)
 	if err != nil {
 		log.Printf("write challenge code error: %s", err)
@@ -109,6 +119,7 @@ func (s *SentenceService) handleClient(
 
 	// get challenge response
 
+	conn.SetReadDeadline(time.Now().Add(c.params.ChallengeTimeout))
 	challengeResponse, err := helpers.Receive(conn)
 	if err != nil {
 		log.Printf("read challenge resp error: %s", err)
@@ -131,7 +142,13 @@ func (s *SentenceService) handleClient(
 
 	// write fake sentence as response
 
-	sentence := faker.Sentence()
+	sentence, err := c.service.GetSentence(ctx)
+	if err != nil {
+		log.Printf("service get sentence error: %s", err)
+		return
+	}
+
+	conn.SetWriteDeadline(time.Now().Add(c.params.WriteTimeout))
 	_, err = conn.Write([]byte(sentence))
 	if err != nil {
 		log.Printf("write response error: %s", err)
@@ -141,7 +158,7 @@ func (s *SentenceService) handleClient(
 	log.Println("server send sentence:", sentence)
 }
 
-func (s *SentenceService) getChallengeCode() []byte {
+func (s *Controller) getChallengeCode() []byte {
 	challengeCode := uuid.New()
 	return challengeCode[:]
 }
